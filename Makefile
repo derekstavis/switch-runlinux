@@ -53,6 +53,7 @@ toolchain:
 shofel2-run:
 	$(RUN) bash -c 'cd shofel2/exploit && \
 		python shofel2.py cbfs.bin ../../coreboot/build/coreboot.rom'
+	@sleep 3
 
 usb-loader:
 	$(RUN) bash -c 'cd shofel2/usb_loader && \
