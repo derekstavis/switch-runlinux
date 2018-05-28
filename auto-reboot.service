@@ -1,0 +1,9 @@
+[Unit]
+Description=Reboot after some time
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'sleep 30; systemctl reboot'
+
+[Install]
+WantedBy=multi-user.target

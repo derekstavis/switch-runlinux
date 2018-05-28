@@ -1,6 +1,9 @@
 export PATH /opt/toolchain/aarch64-linux-gnu/bin:$(PATH)
 export PATH /opt/toolchain/arm-linux-gnueabi/bin:$(PATH)
 
+ARCHLINUX_TAR := ArchLinuxARM-aarch64-latest.tar.gz
+ARCHLINUX_URL := http://os.archlinuxarm.org/os/$(ARCHLINUX_TAR)
+
 CLONE := git clone --depth=1
 
 MAKE := make -j1
@@ -61,6 +64,70 @@ usb-loader:
 		../../imx_usb_loader/imx_usb -c .'
 
 run: shofel2-run usb-loader
+
+MOUNTPOINT=mnt
+PACMAN_CACHE=cache/.local-cache
+
+$(MOUNTPOINT):
+	mkdir -p $(MOUNTPOINT)
+
+$(PACMAN_CACHE):
+	mkdir -p $(PACMAN_CACHE)
+	sudo mount -o bind cache $(MOUNTPOINT)/var/cache/pacman/pkg
+
+$(MOUNTPOINT)/dev: $(MOUNTPOINT)
+	sudo mount /dev/sdb2 $(MOUNTPOINT)
+
+$(MOUNTPOINT)/dev/tty: $(MOUNTPOINT)/dev
+	$(foreach name,dev dev/pts proc sys,sudo mount -o bind /$(name) $(MOUNTPOINT)/$(name);)
+
+chroot: $(MOUNTPOINT)/dev/tty
+	sudo chroot mnt
+
+umount:
+	mount | grep $(MOUNTPOINT) | cut -d\  -f3 | sort -u | tac | xargs sudo umount
+
+QEMU=$(shell which qemu-aarch64-static)
+
+$(MOUNTPOINT)/$(QEMU):
+	sudo cp $(QEMU) $(MOUNTPOINT)/$(QEMU)
+
+$(MOUNTPOINT)/usr/share: $(MOUNTPOINT) ./ArchLinuxARM-aarch64-latest.tar.gz
+	test -e $(MOUNTPOINT)/usr/share || sudo bsdtar -xpUf $(ARCHLINUX_TAR) -C $(MOUNTPOINT)
+
+./ArchLinuxARM-aarch64-latest.tar.gz:
+	wget $(ARCHLINUX_URL)
+
+base-system: $(MOUNTPOINT) ./ArchLinuxARM-aarch64-latest.tar.gz $(MOUNTPOINT)/usr/share
+
+$(MOUNTPOINT)/etc/udev/rules.d/switch-ts-calibration.rules:
+	sudo cp shofel2/configs/switch-ts-calibration.rules $(MOUNTPOINT)/etc/udev/rules.d/
+
+$(MOUNTPOINT)/usr/bin/xinitrc-header:
+	sudo cp shofel2/configs/xinitrc-header.sh $(MOUNTPOINT)/usr/bin/xinitrc-header
+	sudo sed -i '1i#!/bin/bash' $(MOUNTPOINT)/usr/bin/xinitrc-header
+	sudo chmod +x $(MOUNTPOINT)/usr/bin/xinitrc-header
+
+xorg-fixup: $(MOUNTPOINT)/etc/udev/rules.d/switch-ts-calibration.rules $(MOUNTPOINT)/usr/bin/xinitrc-header
+
+$(MOUNTPOINT)/var/lib/pacman/local/gnome-shell-.*: $(MOUNTPOINT)/$(QEMU) $(MOUNPOINT)/dev/tty xorg-fixup $(PACMAN_CACHE)
+	# sudo chroot $(MOUNTPOINT) /usr/bin/pacman -Sy gnome networkmanager xorg-xinput xorg-xrandr
+	grep xinit-header $(MOUNTPOINT)/usr/lib/systemd/system/gdm.service || \
+		sudo sed -i \
+			's/\(\[Service\]\)/\1\nExecStartPre=\/usr\/bin\/xinitrc-header/g' \
+			$(MOUNTPOINT)/usr/lib/systemd/system/gdm.service
+
+$(MOUNTPOINT)/etc/systemd/system/display-manager.service: $(MOUNTPOINT)/$(QEMU) $(MOUNTPOINT)/dev/tty
+	sudo chroot $(MOUNTPOINT) /usr/bin/systemctl enable gdm NetworkManager
+
+gnome: $(MOUNTPOINT)/var/lib/pacman/local/gnome-shell-.* $(MOUNTPOINT)/etc/systemd/system/display-manager.service
+
+reboot-script:
+	sudo cp -r auto-reboot.service mnt/usr/lib/systemd/system
+	sudo chroot $(MOUNTPOINT) /usr/bin/systemctl enable auto-reboot
+
+
+userland: base-system gnome
 
 console:
 	$(RUN) bash
